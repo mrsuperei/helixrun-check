@@ -1,0 +1,18 @@
+{
+  "id": "simple-tool-agent",
+  "type": "single",
+  "description": "Simple chat agent with a calculator tool.",
+  "instruction": "You are a helpful assistant. Use the calculator tool when the user asks about math.",
+  "stream": true,
+  "model": {
+    "provider": "openai",
+    "model": "openai/gpt-oss-20b:free",
+    "api_key_env": "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"
+  },
+  "tools": [
+    {
+      "name": "calculator",
+      "type": "calculator"
+    }
+  ]
+}

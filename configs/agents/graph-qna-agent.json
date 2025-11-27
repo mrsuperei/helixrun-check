@@ -1,0 +1,42 @@
+{
+  "id": "graph-qna-agent",
+  "type": "graph",
+  "description": "3-node graph: entry -> clarify -> answer.",
+  "instruction": "",
+  "stream": true,
+  "model": {
+    "provider": "openai",
+    "model": "openai/gpt-oss-20b:free",
+    "api_key_env": "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"
+  },
+  "graph": {
+    "entry": "entry",
+    "finish": "answer",
+    "nodes": [
+      {
+        "id": "entry",
+        "type": "entry"
+      },
+      {
+        "id": "clarify",
+        "type": "llm",
+        "instruction": "You are a clarifier. Ask for any missing details in 1-2 sentences if the question is ambiguous. Otherwise briefly restate the question."
+      },
+      {
+        "id": "answer",
+        "type": "llm",
+        "instruction": "You are a problem solver. Use all previous context and clarification to answer the user."
+      }
+    ],
+    "edges": [
+      {
+        "from": "entry",
+        "to": "clarify"
+      },
+      {
+        "from": "clarify",
+        "to": "answer"
+      }
+    ]
+  }
+}

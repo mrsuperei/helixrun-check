@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>HelixRun SSE Chat Tester</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    header {
+      padding: 8px 12px;
+      background: #111827;
+      color: #e5e7eb;
+      font-size: 14px;
+    }
+    main {
+      flex: 1;
+      display: flex;
+      gap: 8px;
+      padding: 8px;
+      box-sizing: border-box;
+      background: #f3f4f6;
+    }
+    .column {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .panel {
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      overflow: hidden;
+    }
+    .panel-header {
+      padding: 6px 8px;
+      font-size: 12px;
+      font-weight: 600;
+      background: #f9fafb;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .panel-body {
+      flex: 1;
+      overflow: auto;
+      padding: 8px;
+      background: #f9fafb;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .panel-body pre {
+      margin: 0;
+      padding: 6px;
+      background: #111827;
+      color: #e5e7eb;
+      border-radius: 4px;
+      font-size: 11px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+    form {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px;
+      border-bottom: 1px solid #e5e7eb;
+      background: #f9fafb;
+    }
+    label {
+      font-size: 11px;
+      font-weight: 600;
+    }
+    input[type="text"],
+    select,
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 8px;
+      font-size: 12px;
+      border-radius: 4px;
+      border: 1px solid #d1d5db;
+      font-family: inherit;
+      resize: vertical;
+    }
+    textarea {
+      min-height: 60px;
+    }
+    button {
+      padding: 6px 10px;
+      font-size: 12px;
+      border-radius: 4px;
+      border: none;
+      cursor: pointer;
+      background: #2563eb;
+      color: white;
+      font-weight: 600;
+    }
+    button[disabled] {
+      opacity: 0.6;
+      cursor: default;
+    }
+    .row-inline {
+      display: flex;
+      gap: 6px;
+    }
+    .row-inline > div {
+      flex: 1;
+    }
+    .chat-log-entry {
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+    .chat-log-entry span.role {
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+<header>
+  HelixRun SSE Chat Tester &mdash; /chat (POST + text/event-stream)
+</header>
+
+<main>
+  <div class="column">
+    <div class="panel">
+      <div class="panel-header">Chat</div>
+      <form id="chat-form">
+        <div>
+          <label for="agent-id">Agent</label>
+          <select id="agent-id" name="agent_id">
+            <option value="simple-tool-agent">simple-tool-agent</option>
+            <option value="multi-chain-agent">multi-chain-agent</option>
+            <option value="graph-qna-agent">graph-qna-agent</option>
+          </select>
+        </div>
+
+        <div class="row-inline">
+          <div>
+            <label for="user-id">User ID</label>
+            <input id="user-id" type="text" value="demo-user" />
+          </div>
+          <div>
+            <label for="session-id">Session ID (optional)</label>
+            <input id="session-id" type="text" placeholder="session-123" />
+          </div>
+        </div>
+
+        <div>
+          <label for="message">Message</label>
+          <textarea id="message">Hello, can you explain what this agent does?</textarea>
+        </div>
+
+        <div class="row-inline">
+          <button type="submit" id="send-btn">Send &amp; Stream</button>
+          <button type="button" id="stop-btn">Stop Stream</button>
+        </div>
+      </form>
+
+      <div class="panel-body" id="chat-output"></div>
+    </div>
+  </div>
+
+  <div class="column">
+    <div class="panel">
+      <div class="panel-header">Raw Events (JSON)</div>
+      <div class="panel-body" id="events-output"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+  const chatForm = document.getElementById("chat-form");
+  const sendBtn = document.getElementById("send-btn");
+  const stopBtn = document.getElementById("stop-btn");
+  const chatOutput = document.getElementById("chat-output");
+  const eventsOutput = document.getElementById("events-output");
+
+  const CHAT_URL = "/chat"; // same origin as Go server
+
+  let currentController = null;
+
+  // Eén doorlopende <pre> voor alle raw events
+  const eventsPre = document.createElement("pre");
+  eventsOutput.appendChild(eventsPre);
+
+  // Huidige assistant message (streamende tekst)
+  let assistantNode = null;
+  let assistantText = "";
+
+  chatForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    startChatStream();
+  });
+
+  stopBtn.addEventListener("click", () => {
+    if (currentController) {
+      currentController.abort();
+      appendChatLog("system", "[stream aborted]");
+    }
+  });
+
+  function startChatStream() {
+    const agentId = document.getElementById("agent-id").value.trim();
+    const userId = document.getElementById("user-id").value.trim() || "anonymous";
+    const sessionId = document.getElementById("session-id").value.trim();
+    const message = document.getElementById("message").value.trim();
+
+    if (!agentId || !message) {
+      alert("Agent ID and message are required.");
+      return;
+    }
+
+    if (currentController) {
+      // Abort any previous stream
+      currentController.abort();
+    }
+
+    currentController = new AbortController();
+    const signal = currentController.signal;
+
+    sendBtn.disabled = true;
+
+    // Nieuwe chat-run → reset assistant-buffer
+    appendChatLog("user", message);
+    assistantNode = null;
+    assistantText = "";
+
+    const payload = {
+      agent_id: agentId,
+      user_id: userId,
+      session_id: sessionId || "",
+      message: message,
+    };
+
+    clearEventsLog();
+
+    fetch(CHAT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+      },
+      body: JSON.stringify(payload),
+      signal,
+    }).then(async (response) => {
+      if (!response.ok) {
+        appendChatLog("system", `HTTP error: ${response.status} ${response.statusText}`);
+        sendBtn.disabled = false;
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let buffer = "";
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let parts = buffer.split("\n\n");
+          buffer = parts.pop() || "";
+
+          for (const rawEvent of parts) {
+            handleSSEEvent(rawEvent);
+          }
+        }
+      } catch (err) {
+        if (err.name === "AbortError") {
+          // user aborted, ignore
+        } else {
+          appendChatLog("system", "Stream error: " + err.message);
+        }
+      } finally {
+        sendBtn.disabled = false;
+        currentController = null;
+      }
+    }).catch((err) => {
+      appendChatLog("system", "Fetch error: " + err.message);
+      sendBtn.disabled = false;
+      currentController = null;
+    });
+  }
+
+  function handleSSEEvent(rawEvent) {
+    // rawEvent is iets als:
+    // data: {"type":"...","event":{...}}
+    const lines = rawEvent.split("\n");
+    const dataLines = [];
+
+    for (const line of lines) {
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+
+    if (dataLines.length === 0) {
+      return;
+    }
+
+    const joined = dataLines.join("\n");
+
+    try {
+      const obj = JSON.parse(joined);
+      const ev = obj.event || {};
+      const typ = obj.type || ev.object || "";
+
+      // 1) Raw events loggen, maar chat.completion.chunk overslaan (te veel noise)
+      if (typ !== "chat.completion.chunk") {
+        appendEventRaw(obj);
+      }
+
+      // 2) Streaming tokens → linker chatpaneel
+      if (typ === "chat.completion.chunk") {
+        const choices = ev.choices || [];
+        if (choices.length > 0 && choices[0].delta) {
+          const delta = choices[0].delta;
+          const deltaContent = typeof delta.content === "string" ? delta.content : "";
+          if (deltaContent) {
+            ensureAssistantNode();
+            assistantText += deltaContent;
+            updateAssistantText(assistantText);
+          }
+        }
+      }
+
+      // 3) Finale completion → vervang streamtekst met definitieve content
+      if (typ === "chat.completion") {
+        const choices = ev.choices || [];
+        if (choices.length > 0 && choices[0].message) {
+          const msg = choices[0].message;
+          const full = typeof msg.content === "string" ? msg.content : assistantText;
+          ensureAssistantNode();
+          assistantText = full || assistantText;
+          updateAssistantText(assistantText);
+        }
+      }
+
+      // 4) Error events (bijv. model- of runner-fouten)
+      if (typ === "error") {
+        const errPayload = obj.error || ev.error || {};
+        const msg = errPayload.message || errPayload.Message || "unknown error";
+        appendChatLog("system", "Run error: " + msg);
+      }
+    } catch (e) {
+      // Geen geldige JSON
+      // appendEventRaw({ raw: joined, parse_error: e.message });
+    }
+  }
+
+  function ensureAssistantNode() {
+    if (!assistantNode) {
+      assistantNode = appendChatLog("assistant", "");
+    }
+  }
+
+  function updateAssistantText(text) {
+    if (!assistantNode) return;
+    const textSpan = assistantNode.querySelector("span.text");
+    if (textSpan) {
+      textSpan.textContent = text;
+      chatOutput.scrollTop = chatOutput.scrollHeight;
+    }
+  }
+
+  function appendChatLog(role, text) {
+    const div = document.createElement("div");
+    div.className = "chat-log-entry";
+    const roleSpan = document.createElement("span");
+    roleSpan.className = "role";
+    roleSpan.textContent = role + ": ";
+    const textSpan = document.createElement("span");
+    textSpan.className = "text";
+    textSpan.textContent = text;
+    div.appendChild(roleSpan);
+    div.appendChild(textSpan);
+    chatOutput.appendChild(div);
+    chatOutput.scrollTop = chatOutput.scrollHeight;
+    return div;
+  }
+
+  // stateDelta base64 → leesbaar maken (tekst of JSON)
+  function decodeStateDelta(stateDelta) {
+    const decoded = {};
+    for (const key in stateDelta) {
+      const val = stateDelta[key];
+      if (typeof val !== "string") {
+        decoded[key] = val;
+        continue;
+      }
+      try {
+        const decodedStr = atob(val);
+        // probeer JSON te parsen; als dat faalt, laat als string
+        try {
+          decoded[key] = JSON.parse(decodedStr);
+        } catch {
+          decoded[key] = decodedStr;
+        }
+      } catch {
+        decoded[key] = val;
+      }
+    }
+    return decoded;
+  }
+
+  // Pretty JSON in één doorlopend blok, met stateDeltaDecoded voor graphs
+  function appendEventRaw(obj) {
+    // Shallow clone om extra veld toe te voegen zonder origineel te muteren
+    const clone = { ...obj };
+    if (clone.event) {
+      clone.event = { ...clone.event };
+      if (clone.event.stateDelta && typeof clone.event.stateDelta === "object") {
+        clone.event.stateDeltaDecoded = decodeStateDelta(clone.event.stateDelta);
+      }
+    }
+
+    const pretty = JSON.stringify(clone, null, 2);
+    eventsPre.textContent += pretty + "\n\n";
+    eventsOutput.scrollTop = eventsOutput.scrollHeight;
+  }
+
+  function clearEventsLog() {
+    eventsPre.textContent = "";
+  }
+</script>
+
+</body>
+</html>

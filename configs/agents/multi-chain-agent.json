@@ -1,0 +1,27 @@
+{
+  "id": "multi-chain-agent",
+  "type": "multi_chain",
+  "description": "Planner -> writer chain multi-agent.",
+  "instruction": "",
+  "stream": true,
+  "model": {
+    "provider": "openai",
+    "model": "openai/gpt-oss-20b:free",
+    "api_key_env": "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"
+  },
+  "multi": {
+    "mode": "chain",
+    "agents": [
+      {
+        "id": "planner",
+        "instruction": "You are a planning agent. Break the task into clear steps.",
+        "description": "Planning step"
+      },
+      {
+        "id": "writer",
+        "instruction": "You are an execution agent. Use the plan to produce a final answer.",
+        "description": "Execution step"
+      }
+    ]
+  }
+}
