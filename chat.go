@@ -2,28 +2,26 @@ package http
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
 
 	"helixrun/internal/agents"
-	runnersvc "helixrun/internal/runner"
 
 	"trpc.group/trpc-go/trpc-agent-go/event"
 	"trpc.group/trpc-go/trpc-agent-go/model"
+	"trpc.group/trpc-go/trpc-agent-go/runner"
+	"trpc.group/trpc-go/trpc-agent-go/session/inmemory"
 )
 
 // ChatServer handles /chat SSE requests.
 type ChatServer struct {
-	runnerService *runnersvc.Service
+	registry *agents.Registry
 }
 
 // NewChatServer creates a ChatServer.
 func NewChatServer(reg *agents.Registry) *ChatServer {
-	return &ChatServer{
-		runnerService: runnersvc.NewService(reg),
-	}
+	return &ChatServer{registry: reg}
 }
 
 // ChatRequest is the JSON payload accepted by /chat.
@@ -77,78 +75,58 @@ func (s *ChatServer) ChatHandler(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	msg := model.NewUserMessage(req.Message)
-
-	eventCh, err := s.runnerService.Run(ctx, req.AgentID, req.UserID, req.SessionID, msg)
+	agt, err := s.registry.BuildAgent(ctx, req.AgentID)
 	if err != nil {
-		log.Printf("runner service failed: %v", err)
-		if errors.Is(err, runnersvc.ErrBuildAgent) {
-			writeSSEError(w, flusher, err)
-		} else {
-			handleSSEError(w, flusher, err)
-		}
+		log.Printf("build agent %q failed: %v", req.AgentID, err)
+		writeSSEError(w, flusher, err)
 		return
 	}
 
-	// Zorg dat headers en flusher al gezet zijn vóór deze loop.
-	for ev := range eventCh {
-		if ev == nil {
-			continue
+	sessionService := inmemory.NewSessionService()
+	appRunner := runner.NewRunner(
+		"helixrun-starter",
+		agt,
+		runner.WithSessionService(sessionService),
+	)
+
+	msg := model.NewUserMessage(req.Message)
+	events, err := appRunner.Run(ctx, req.UserID, req.SessionID, msg)
+	if err != nil {
+		log.Printf("runner.Run error: %v", err)
+		writeSSEError(w, flusher, err)
+		return
+	}
+
+	enc := json.NewEncoder(w)
+
+	for ev := range events {
+		typ := ""
+		if ev.Response != nil {
+			typ = ev.Response.Object
+		}
+		env := sseEnvelope{
+			Type:  typ,
+			Event: ev,
 		}
 
-		// 1) Projecteer naar UIEvent (node/graph-aware)
-		uiEv := BuildUIEvent(ev)
-		if uiEv == nil {
-			continue
+		if _, err := fmt.Fprint(w, "data: "); err != nil {
+			return
 		}
-
-		// 2) Bouw payload voor de frontend.
-		//    - "ui": samengevatte node/graph/model info (voor nette UI)
-		//    - "raw": volledige event voor debug panel rechts
-
-		data, marshalErr := json.Marshal(uiEv)
-		if marshalErr != nil {
-			log.Printf("marshal error event failed: %v", marshalErr)
-			continue
+		if err := enc.Encode(env); err != nil {
+			log.Printf("encode event failed: %v", err)
+			return
 		}
-
-		// 3) Stuur als SSE
-		//    Frontend luistert op 'message' en parse't JSON.
-		if _, err := fmt.Fprintf(w, "data: %s\n\n", string(data)); err != nil {
-			log.Printf("write sse event failed: %v", err)
+		// Encoder writes newline; SSE requires an extra blank line.
+		if _, err := fmt.Fprint(w, "\n"); err != nil {
 			return
 		}
 		flusher.Flush()
-
-		// 4) Optioneel: als je alleen 1 run wil, kun je op RunnerCompletion breken.
-		if uiEv.RunnerCompletion {
-			// laatste event voor deze run
-			break
-		}
 	}
-
 }
 
 func writeSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
 	env := map[string]any{
 		"type": "error",
-		"error": map[string]any{
-			"message": err.Error(),
-		},
-	}
-
-	data, marshalErr := json.Marshal(env)
-	if marshalErr != nil {
-		log.Printf("marshal error env failed: %v", marshalErr)
-		return
-	}
-
-	fmt.Fprintf(w, "data: %s\n\n", string(data))
-	flusher.Flush()
-}
-func handleSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
-	env := map[string]any{
-		"type": "run.error",
 		"error": map[string]any{
 			"message": err.Error(),
 		},

@@ -6,8 +6,8 @@
   "stream": true,
   "model": {
     "provider": "openai",
-    "model": "openai/gpt-oss-20b:free",
-    "api_key_env": "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"
+    "model": "gemini-2.5-flash",
+    "api_key_env": "sk-test"
   },
   "tools": [
     {
