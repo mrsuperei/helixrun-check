@@ -2,8 +2,8 @@
   "id": "simple-tool-agent",
   "type": "single",
   "description": "Simple chat agent with a calculator tool.",
-  "instruction": "You are a helpful assistant. Use the calculator tool when the user asks about math.",
-  "stream": true,
+  "instruction": "You are a helpful assistant. Use the calculator tool when the user asks about math. After receiving the tool output, formulate a final answer for the user immediately.",
+  "stream": false,
   "model": {
     "provider": "openai",
     "model": "gemini-2.5-flash",
